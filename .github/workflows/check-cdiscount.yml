@@ -1,0 +1,47 @@
+name: Cdiscount availability checker
+
+on:
+  schedule:
+    # GitHub cron cannot fire more often than every 5 min.
+    # Each run performs 5 checks 1 minute apart, which gives a check every minute overall.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Never run two checkers at the same time (a late cron trigger would otherwise overlap the previous run)
+concurrency:
+  group: cdiscount-checker
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - run: node check_cdiscount.js
+        env:
+          # Repository variable: Settings > Secrets and variables > Actions > Variables > PRODUCT_URL
+          PRODUCT_URL: ${{ vars.PRODUCT_URL }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          INTERVAL_MS: "60000"
+          ITERATIONS: "5"
+
+      # Backup copy of the session file (also sent on Telegram), downloadable from the workflow run page
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cdiscount-session
+          path: cdiscount-session.json
+          if-no-files-found: ignore
+          retention-days: 1

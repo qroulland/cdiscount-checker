@@ -1,0 +1,12 @@
+{
+  "name": "cdiscount-checker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node check_cdiscount.js",
+    "open": "node check_cdiscount.js open"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
