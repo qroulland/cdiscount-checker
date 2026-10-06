@@ -4,7 +4,7 @@ const { chromium } = require('playwright');
 
 // Product page to watch. On GitHub Actions it comes from the repository variable PRODUCT_URL.
 const URL = process.env.PRODUCT_URL;
-const CART_URL = 'https://order.cdiscount.com/Basket/BasketPage.html';
+const CART_URL = 'https://www.cdiscount.com/basket.html';
 
 const ADD_TO_CART_BUTTON = '[data-e2e="product-add-to-cart"]';
 const ADD_TO_CART_WORDING = 'Ajouter au panier';
@@ -33,11 +33,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function notify(message) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-    await fetch(url, {
+    const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
     });
+    if (!res.ok) log(`⚠️ Telegram sendMessage ${res.status}: ${await res.text()}`);
 }
 
 async function sendDocument(filePath, caption) {
@@ -46,7 +47,8 @@ async function sendDocument(filePath, caption) {
     form.append('chat_id', TELEGRAM_CHAT_ID);
     form.append('caption', caption);
     form.append('document', new Blob([fs.readFileSync(filePath)], { type: 'application/json' }), path.basename(filePath));
-    await fetch(url, { method: 'POST', body: form });
+    const res = await fetch(url, { method: 'POST', body: form });
+    if (!res.ok) log(`⚠️ Telegram sendDocument ${res.status}: ${await res.text()}`);
 }
 
 // Same cookies in the JSON format understood by the "Cookie-Editor" browser extension (Import),
