@@ -104,6 +104,12 @@ async function findAddToCartButton(page) {
     return count > 0 ? buttons.last() : null;
 }
 
+async function productName(page) {
+    const title = await page.locator('[data-e2e="title"]').first().textContent({ timeout: 3_000 }).catch(() => '');
+    const fallback = (await page.title()).replace(/\s*-\s*Cdiscount.*$/i, '');
+    return (title || fallback).replace(/\s+/g, ' ').trim();
+}
+
 async function cartItemCount(context) {
     const cookie = (await context.cookies('https://www.cdiscount.com')).find((c) => c.name === 'articles_count');
     return Number(cookie?.value || 0);
@@ -146,13 +152,14 @@ async function checkAvailability(context) {
         }
 
         // 4. Save the session (cart cookies) and alert on Telegram with the session file attached
-        log(`✅ ${ADDED_TO_CART_WORDING} (${await cartItemCount(context)} article(s) dans le panier)`);
+        const name = await productName(page);
+        log(`✅ "${name}" ajouté au panier (${await cartItemCount(context)} article(s) dans le panier)`);
         const sessionFile = await saveSession(context);
         const sessionName = path.basename(sessionFile);
         const openCommand = `cd ~/Sites/personal-projects/cdiscount-checker && npm run open -- ~/Downloads/${sessionName}`;
         await notify(
             [
-                '🔥 Produit ajouté au panier, passer commande maintenant',
+                `🔥 "${name}" ajouté au panier, passer commande maintenant`,
                 '',
                 'Pour récupérer le panier :',
                 `1. Télécharge le fichier ${sessionName} ci-dessous`,
