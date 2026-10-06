@@ -30,8 +30,8 @@ jobs:
 
       - run: node check_cdiscount.js
         env:
-          # Repository variable: Settings > Secrets and variables > Actions > Variables > PRODUCT_URL
-          PRODUCT_URL: ${{ vars.PRODUCT_URL }}
+          # Repository variable PRODUCT_URL (Variables tab), or a secret of the same name as fallback
+          PRODUCT_URL: ${{ vars.PRODUCT_URL || secrets.PRODUCT_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           INTERVAL_MS: "60000"
