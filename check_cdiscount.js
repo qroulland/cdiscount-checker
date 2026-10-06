@@ -39,12 +39,19 @@ const USER_AGENT =
 const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function notify(message) {
+// copyText: optional inline button that copies the given text to the clipboard (Bot API "copy_text" button)
+async function notify(message, copyText) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message }),
+        body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            ...(copyText && {
+                reply_markup: { inline_keyboard: [[{ text: '📋 Copier la commande', copy_text: { text: copyText } }]] },
+            }),
+        }),
     });
     if (!res.ok) log(`⚠️ Telegram sendMessage ${res.status}: ${await res.text()}`);
 }
@@ -142,17 +149,17 @@ async function checkAvailability(context) {
         log(`✅ ${ADDED_TO_CART_WORDING} (${await cartItemCount(context)} article(s) dans le panier)`);
         const sessionFile = await saveSession(context);
         const sessionName = path.basename(sessionFile);
+        const openCommand = `cd ~/Sites/personal-projects/cdiscount-checker && npm run open -- ~/Downloads/${sessionName}`;
         await notify(
             [
                 '🔥 Produit ajouté au panier, passer commande maintenant',
                 '',
                 'Pour récupérer le panier :',
                 `1. Télécharge le fichier ${sessionName} ci-dessous`,
-                `2. npm run open -- ~/Downloads/${sessionName}`,
+                '2. Lance la commande (bouton pour la copier)',
                 '3. Connecte-toi à ton compte dans la fenêtre et valide la commande',
-                '',
-                CART_URL,
             ].join('\n'),
+            openCommand,
         );
         await sendDocument(sessionFile, 'Session Cdiscount avec le panier. Ouvre-la avec: npm run open -- <fichier>').catch(
             (error) => log(`⚠️ Envoi du fichier de session impossible: ${error.message}`),
