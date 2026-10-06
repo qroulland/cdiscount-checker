@@ -13,14 +13,22 @@ const ADDED_TO_CART_CLASS = '.sc-dvXCMe.hJwwjS'; // hashed styled-components cla
 
 // Usage:
 //   node check_cdiscount.js                 -> loop: check, add to cart, alert, save session
-//   node check_cdiscount.js open [file]     -> reopen the saved session in a visible browser on the cart page
+//   node check_cdiscount.js open [file]     -> reopen a saved session (default: latest) in a visible browser on the cart page
 const MODE = process.argv[2];
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 60_000); // 1 min
 const ITERATIONS = Number(process.env.ITERATIONS || 0); // 0 = loop forever
 const HEADLESS = MODE !== 'open' && process.env.HEADLESS !== 'false';
 
-const SESSION_PATH = path.resolve(process.argv[3] || path.join(__dirname, 'cdiscount-session.json'));
-const COOKIES_EXPORT_PATH = path.join(__dirname, 'cdiscount-cookies.json');
+// Session files are written next to the script as cdiscount-session-<timestamp>.json
+const SESSION_PREFIX = 'cdiscount-session-';
+const sessionFilePath = () => path.join(__dirname, `${SESSION_PREFIX}${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+const latestSessionFile = () =>
+    fs
+        .readdirSync(__dirname)
+        .filter((f) => f.startsWith(SESSION_PREFIX) && f.endsWith('.json'))
+        .sort()
+        .map((f) => path.join(__dirname, f))
+        .pop();
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -51,28 +59,11 @@ async function sendDocument(filePath, caption) {
     if (!res.ok) log(`⚠️ Telegram sendDocument ${res.status}: ${await res.text()}`);
 }
 
-// Same cookies in the JSON format understood by the "Cookie-Editor" browser extension (Import),
-// in case you want to load the session in your everyday Chrome instead of the "open" command.
-function toCookieEditorFormat(cookies) {
-    return cookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        expirationDate: c.expires > 0 ? c.expires : undefined,
-        hostOnly: !c.domain.startsWith('.'),
-        httpOnly: c.httpOnly,
-        secure: c.secure,
-        session: c.expires <= 0,
-        sameSite: c.sameSite === 'None' ? 'no_restriction' : c.sameSite.toLowerCase(),
-    }));
-}
-
 async function saveSession(context) {
-    await context.storageState({ path: SESSION_PATH });
-    const cookies = (await context.cookies()).filter((c) => c.domain.includes('cdiscount'));
-    fs.writeFileSync(COOKIES_EXPORT_PATH, JSON.stringify(toCookieEditorFormat(cookies), null, 2));
-    log(`💾 Session sauvegardée: ${SESSION_PATH}`);
+    const filePath = sessionFilePath();
+    await context.storageState({ path: filePath });
+    log(`💾 Session sauvegardée: ${filePath}`);
+    return filePath;
 }
 
 async function acceptCookies(page) {
@@ -149,23 +140,23 @@ async function checkAvailability(context) {
 
         // 4. Save the session (cart cookies) and alert on Telegram with the session file attached
         log(`✅ ${ADDED_TO_CART_WORDING} (${await cartItemCount(context)} article(s) dans le panier)`);
-        await saveSession(context);
+        const sessionFile = await saveSession(context);
+        const sessionName = path.basename(sessionFile);
         await notify(
             [
                 '🔥 Produit ajouté au panier, passer commande maintenant',
                 '',
                 'Pour récupérer le panier :',
-                '1. Télécharge le fichier cdiscount-session.json ci-dessous',
-                '2. npm run open -- ~/Downloads/cdiscount-session.json',
+                `1. Télécharge le fichier ${sessionName} ci-dessous`,
+                `2. npm run open -- ~/Downloads/${sessionName}`,
                 '3. Connecte-toi à ton compte dans la fenêtre et valide la commande',
                 '',
                 CART_URL,
             ].join('\n'),
         );
-        await sendDocument(SESSION_PATH, 'Session Cdiscount avec le panier. Ouvre-la avec: npm run open -- <fichier>').catch(
+        await sendDocument(sessionFile, 'Session Cdiscount avec le panier. Ouvre-la avec: npm run open -- <fichier>').catch(
             (error) => log(`⚠️ Envoi du fichier de session impossible: ${error.message}`),
         );
-        await sendDocument(COOKIES_EXPORT_PATH, 'Variante pour l\'extension Chrome Cookie-Editor (Import).').catch(() => {});
         return true;
     } finally {
         await page.close().catch(() => {});
@@ -173,13 +164,16 @@ async function checkAvailability(context) {
 }
 
 async function openSession() {
-    if (!fs.existsSync(SESSION_PATH)) {
-        console.error(`Fichier de session introuvable: ${SESSION_PATH}`);
+    // Explicit file argument, otherwise the most recent session file next to the script
+    const sessionFile = process.argv[3] ? path.resolve(process.argv[3]) : latestSessionFile();
+    if (!sessionFile || !fs.existsSync(sessionFile)) {
+        console.error(`Fichier de session introuvable: ${sessionFile || `${SESSION_PREFIX}*.json`}`);
         process.exit(1);
     }
+    log(`📂 Session: ${sessionFile}`);
     const browser = await chromium.launch({ headless: false, channel: 'chrome' }).catch(() => chromium.launch({ headless: false }));
     // Same user agent as the checker: Cloudflare's cf_clearance cookie is bound to it.
-    const context = await browser.newContext({ storageState: SESSION_PATH, locale: 'fr-FR', userAgent: USER_AGENT, viewport: { width: 1366, height: 900 } });
+    const context = await browser.newContext({ storageState: sessionFile, locale: 'fr-FR', userAgent: USER_AGENT, viewport: { width: 1366, height: 900 } });
     const page = await context.newPage();
     await page.goto(CART_URL);
     log('🪟 Session restaurée sur le panier. Connecte-toi et passe commande. Ctrl+C pour fermer.');
