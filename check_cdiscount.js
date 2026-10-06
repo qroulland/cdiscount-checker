@@ -18,6 +18,8 @@ const MODE = process.argv[2];
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 60_000); // 1 min
 const ITERATIONS = Number(process.env.ITERATIONS || 0); // 0 = loop forever
 const HEADLESS = MODE !== 'open' && process.env.HEADLESS !== 'false';
+const HEARTBEAT = process.env.HEARTBEAT === 'true'; // Telegram message when a run starts
+const ERROR_ALERT_THRESHOLD = Number(process.env.ERROR_ALERT_THRESHOLD || 15); // consecutive failed checks before warning
 
 // Session files are written next to the script as cdiscount-session-<timestamp>.json
 const SESSION_PREFIX = 'cdiscount-session-';
@@ -128,6 +130,9 @@ async function checkAvailability(context) {
         const addToCart = await findAddToCartButton(page);
         const buttonVisible = addToCart ? await addToCart.isVisible({ timeout: 5_000 }).catch(() => false) : false;
         if (!buttonVisible) {
+            // A sold-out product page shows an "unavailable" block. Nothing at all means we got a block page or a redesign.
+            const soldOut = await page.locator('[data-e2e="unavailable-message"]').first().isVisible({ timeout: 3_000 }).catch(() => false);
+            if (!soldOut) throw new Error(`page inattendue (ni bouton ni message indisponible), titre: "${await page.title()}"`);
             log(`❌ Bouton "${ADD_TO_CART_WORDING}" absent, produit indisponible`);
             return false;
         }
@@ -198,16 +203,29 @@ async function watch() {
     const browser = await chromium.launch({ headless: HEADLESS });
     const context = await browser.newContext({ locale: 'fr-FR', userAgent: USER_AGENT, viewport: { width: 1366, height: 900 } });
 
+    if (HEARTBEAT) {
+        const span = ITERATIONS ? `${ITERATIONS} vérifications` : 'en continu';
+        await notify(`👀 Surveillance active (${span}, toutes les ${Math.round(INTERVAL_MS / 60_000)} min)`).catch(() => {});
+    }
+
     let run = 0;
     let found = false;
+    let consecutiveErrors = 0;
+    let errorAlertSent = false;
     try {
         while (ITERATIONS === 0 || run < ITERATIONS) {
             run += 1;
             try {
                 found = await checkAvailability(context);
+                consecutiveErrors = 0;
                 if (found) break; // stop looping once alerted
             } catch (error) {
-                log(`💥 Erreur: ${error.message}`);
+                consecutiveErrors += 1;
+                log(`💥 Erreur (${consecutiveErrors} d'affilée): ${error.message}`);
+                if (consecutiveErrors === ERROR_ALERT_THRESHOLD && !errorAlertSent) {
+                    errorAlertSent = true;
+                    await notify(`⚠️ Le checker échoue depuis ${consecutiveErrors} vérifications d'affilée : ${error.message}`).catch(() => {});
+                }
             }
             if (ITERATIONS === 0 || run < ITERATIONS) await sleep(INTERVAL_MS);
         }

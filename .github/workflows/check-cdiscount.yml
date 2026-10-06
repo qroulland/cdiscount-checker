@@ -1,6 +1,6 @@
 name: Cdiscount availability checker
 
-# One long-running job checks the product every 5 minutes for ~5h40, then triggers its own successor.
+# One long-running job checks the product every minute for ~5h30, then triggers its own successor.
 # GitHub's cron is only a safety net: it restarts the chain if a run died (and is best effort anyway).
 on:
   schedule:
@@ -39,8 +39,10 @@ jobs:
           PRODUCT_URL: ${{ vars.PRODUCT_URL || secrets.PRODUCT_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          INTERVAL_MS: "300000" # 5 min
-          ITERATIONS: "66" # 65 x 5 min of waiting + check time = ~5h40
+          INTERVAL_MS: "60000" # 1 min
+          ITERATIONS: "280" # ~70s per cycle (check + wait) = ~5h30, under the 350 min job timeout
+          HEARTBEAT: "true" # Telegram message at each run start (~4 per day); set to "false" to silence
+          ERROR_ALERT_THRESHOLD: "15" # warn on Telegram after 15 consecutive failed checks (~15 min)
 
       # Backup copy of the session file (also sent on Telegram), downloadable from the workflow run page
       - uses: actions/upload-artifact@v4
@@ -54,6 +56,12 @@ jobs:
       # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick)
       - name: Trigger next run
         if: always() && steps.check.outputs.found != 'true'
-        run: gh workflow run check-cdiscount.yml --ref main -R ${{ github.repository }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh workflow run check-cdiscount.yml --ref main -R "${{ github.repository }}" && exit 0
+            echo "dispatch failed (attempt $attempt), retrying in 30s"
+            sleep 30
+          done
+          exit 1
         env:
           GH_TOKEN: ${{ github.token }}
