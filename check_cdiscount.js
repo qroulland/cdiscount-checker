@@ -19,7 +19,12 @@ const INTERVAL_MS = Number(process.env.INTERVAL_MS || 60_000); // 1 min
 const ITERATIONS = Number(process.env.ITERATIONS || 0); // 0 = loop forever
 const HEADLESS = MODE !== 'open' && process.env.HEADLESS !== 'false';
 const HEARTBEAT = process.env.HEARTBEAT === 'true'; // Telegram message when a run starts
-const ERROR_ALERT_THRESHOLD = Number(process.env.ERROR_ALERT_THRESHOLD || 15); // consecutive failed checks before warning
+const ERROR_ALERT_THRESHOLD = Number(process.env.ERROR_ALERT_THRESHOLD || 3); // consecutive failed checks before warning
+// On GitHub Actions a restarted job gets a fresh VM, hence a new IP and a clean browser: the way out of a ban.
+const RESTART_AFTER_ERRORS = Number(process.env.RESTART_AFTER_ERRORS || 30); // any kind of error, consecutive
+const BAN_RESTARTS = Number(process.env.BAN_RESTARTS || 0); // how many ban restarts already happened in a row
+const BAN_RESTART_COOLDOWN_MS = 60 * 60_000; // after 3 restarts in a row, wait 1h before trying again
+const IN_CI = Boolean(process.env.GITHUB_OUTPUT);
 
 // Session files are written next to the script as cdiscount-session-<timestamp>.json
 const SESSION_PREFIX = 'cdiscount-session-';
@@ -117,10 +122,38 @@ async function cartItemCount(context) {
     return Number(cookie?.value || 0);
 }
 
+// kind: 'ban' (anti-bot block), 'down' (site unreachable), 'unexpected' (page changed / unknown)
+class CheckError extends Error {
+    constructor(kind, message) {
+        super(message);
+        this.kind = kind;
+    }
+}
+
+function classifyError(error) {
+    if (error instanceof CheckError) return error.kind;
+    if (/net::ERR_|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|Timeout \d+ms exceeded.*goto|navigating to/i.test(error.message)) return 'down';
+    return 'unexpected';
+}
+
+const ERROR_LABELS = {
+    ban: '🚫 Blocage probable (ban / anti-bot)',
+    down: '🌐 Site inaccessible',
+    unexpected: '⚠️ Page inattendue (changement de site ?)',
+};
+
 async function checkAvailability(context) {
     const page = await context.newPage();
     try {
-        await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        const response = await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        const status = response?.status() ?? 0;
+        if ([403, 429].includes(status)) throw new CheckError('ban', `HTTP ${status}`);
+        if (status >= 500) throw new CheckError('down', `HTTP ${status}`);
+        if (status >= 400) throw new CheckError('unexpected', `HTTP ${status}`);
+        const title = await page.title();
+        if (/just a moment|attention required|access denied|captcha|blocked|accès refusé/i.test(title)) {
+            throw new CheckError('ban', `page anti-bot "${title}"`);
+        }
         // The React app must be hydrated before the button reacts to clicks.
         await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
         await acceptCookies(page);
@@ -132,7 +165,7 @@ async function checkAvailability(context) {
         if (!buttonVisible) {
             // A sold-out product page shows an "unavailable" block. Nothing at all means we got a block page or a redesign.
             const soldOut = await page.locator('[data-e2e="unavailable-message"]').first().isVisible({ timeout: 3_000 }).catch(() => false);
-            if (!soldOut) throw new Error(`page inattendue (ni bouton ni message indisponible), titre: "${await page.title()}"`);
+            if (!soldOut) throw new CheckError('unexpected', `ni bouton ni message indisponible, titre: "${await page.title()}"`);
             log(`❌ Bouton "${ADD_TO_CART_WORDING}" absent, produit indisponible`);
             return false;
         }
@@ -210,6 +243,7 @@ async function watch() {
 
     let run = 0;
     let found = false;
+    let banRestart = false;
     let consecutiveErrors = 0;
     let errorAlertSent = false;
     try {
@@ -217,22 +251,43 @@ async function watch() {
             run += 1;
             try {
                 found = await checkAvailability(context);
+                if (errorAlertSent) {
+                    errorAlertSent = false;
+                    await notify(`✅ Le checker fonctionne à nouveau (après ${consecutiveErrors} échecs)`).catch(() => {});
+                }
                 consecutiveErrors = 0;
                 if (found) break; // stop looping once alerted
             } catch (error) {
                 consecutiveErrors += 1;
-                log(`💥 Erreur (${consecutiveErrors} d'affilée): ${error.message}`);
-                if (consecutiveErrors === ERROR_ALERT_THRESHOLD && !errorAlertSent) {
+                const kind = classifyError(error);
+                const reason = error.message.split('\n')[0];
+                log(`💥 Erreur [${kind}] (${consecutiveErrors} d'affilée): ${reason}`);
+
+                // Restart on a fresh instance: right away on a ban, or after a long streak of any error
+                const restart = IN_CI && (kind === 'ban' ? consecutiveErrors >= ERROR_ALERT_THRESHOLD : consecutiveErrors >= RESTART_AFTER_ERRORS);
+                if (consecutiveErrors >= ERROR_ALERT_THRESHOLD && (!errorAlertSent || restart)) {
                     errorAlertSent = true;
-                    await notify(`⚠️ Le checker échoue depuis ${consecutiveErrors} vérifications d'affilée : ${error.message}`).catch(() => {});
+                    const lines = [ERROR_LABELS[kind], `${consecutiveErrors} vérifications échouées d'affilée.`, `Dernière erreur : ${reason}`];
+                    if (restart) {
+                        lines.push(`🔄 Redémarrage sur une nouvelle instance GitHub (nouvelle IP), n°${BAN_RESTARTS + 1}`);
+                        if (BAN_RESTARTS >= 3) lines.push('⏸️ Blocage persistant : pause d\'1h avant le prochain essai.');
+                    }
+                    const text = lines.join('\n');
+                    log(`📣 Alerte Telegram: ${text.replace(/\n/g, ' | ')}`);
+                    await notify(text).catch(() => {});
+                }
+                if (restart) {
+                    banRestart = true;
+                    if (BAN_RESTARTS >= 3) await sleep(BAN_RESTART_COOLDOWN_MS);
+                    break;
                 }
             }
             if (ITERATIONS === 0 || run < ITERATIONS) await sleep(INTERVAL_MS);
         }
     } finally {
         await browser.close();
-        // Tell the GitHub Actions workflow whether to chain a new run
-        if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `found=${found}\n`);
+        // Tell the GitHub Actions workflow whether to chain a new run, and whether this was a ban restart
+        if (IN_CI) fs.appendFileSync(process.env.GITHUB_OUTPUT, `found=${found}\nban_restart=${banRestart}\n`);
     }
 }
 

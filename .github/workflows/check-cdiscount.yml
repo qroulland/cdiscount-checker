@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "0 * * * *"
   workflow_dispatch:
+    inputs:
+      ban_restarts:
+        description: "Consecutive restarts caused by a ban (set by the chain, leave 0)"
+        required: false
+        default: "0"
 
 # Never run two checkers at the same time
 concurrency:
@@ -42,7 +47,20 @@ jobs:
           INTERVAL_MS: "60000" # 1 min
           ITERATIONS: "280" # ~70s per cycle (check + wait) = ~5h30, under the 350 min job timeout
           HEARTBEAT: "true" # Telegram message at each run start (~4 per day); set to "false" to silence
-          ERROR_ALERT_THRESHOLD: "15" # warn on Telegram after 15 consecutive failed checks (~15 min)
+          ERROR_ALERT_THRESHOLD: "3" # warn on Telegram after 3 consecutive failed checks (~3 min)
+          RESTART_AFTER_ERRORS: "30" # any error 30 times in a row (~30 min): restart on a fresh VM
+          BAN_RESTARTS: ${{ inputs.ban_restarts || '0' }}
+
+      # The script itself crashed (Playwright install, Node error...): say so on Telegram
+      - name: Alert on job failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            --data-urlencode text="💥 Le job GitHub du checker a planté. Voir ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       # Backup copy of the session file (also sent on Telegram), downloadable from the workflow run page
       - uses: actions/upload-artifact@v4
@@ -53,12 +71,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-      # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick)
+      # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick).
+      # A ban restart increments the counter so the next run can slow down if the ban persists; anything else resets it.
       - name: Trigger next run
         if: always() && steps.check.outputs.found != 'true'
         run: |
+          NEXT=0
+          if [ "${{ steps.check.outputs.ban_restart }}" = "true" ]; then NEXT=$(( ${{ inputs.ban_restarts || '0' }} + 1 )); fi
+          echo "ban_restarts for next run: $NEXT"
           for attempt in 1 2 3 4 5; do
-            gh workflow run check-cdiscount.yml --ref main -R "${{ github.repository }}" && exit 0
+            gh workflow run check-cdiscount.yml --ref main -R "${{ github.repository }}" -f ban_restarts="$NEXT" && exit 0
             echo "dispatch failed (attempt $attempt), retrying in 30s"
             sleep 30
           done
