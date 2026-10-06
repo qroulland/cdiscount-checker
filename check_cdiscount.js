@@ -74,7 +74,7 @@ async function saveSession(context) {
 }
 
 async function acceptCookies(page) {
-    // Best effort: the consent banner would otherwise block the click.
+    // Best effort: the consent banner would otherwise cover the page.
     const candidates = [
         '#footer_tc_privacy_button_2',
         'button:has-text("Accepter")',
@@ -83,22 +83,44 @@ async function acceptCookies(page) {
     ];
     for (const selector of candidates) {
         const button = page.locator(selector).first();
-        if (await button.isVisible().catch(() => false)) {
-            await button.click().catch(() => {});
+        if (await button.isVisible({ timeout: 5_000 }).catch(() => false)) {
+            await button.click({ timeout: 5_000 }).catch(() => {});
             return;
         }
     }
+}
+
+// The page contains two "Ajouter au panier" buttons: the real one in the buy box and a copy in a sticky
+// bar that sits off-screen until you scroll. Only the one inside the viewport can be clicked.
+async function findAddToCartButton(page) {
+    const buttons = page.locator(ADD_TO_CART_BUTTON, { hasText: ADD_TO_CART_WORDING });
+    await buttons.first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
+    const viewport = page.viewportSize();
+    const count = await buttons.count();
+    for (let i = 0; i < count; i++) {
+        const box = await buttons.nth(i).boundingBox();
+        if (box && box.y >= 0 && box.y + box.height <= viewport.height) return buttons.nth(i);
+    }
+    return count > 0 ? buttons.last() : null;
+}
+
+async function cartItemCount(context) {
+    const cookie = (await context.cookies('https://www.cdiscount.com')).find((c) => c.name === 'articles_count');
+    return Number(cookie?.value || 0);
 }
 
 async function checkAvailability(context) {
     const page = await context.newPage();
     try {
         await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        // The React app must be hydrated before the button reacts to clicks.
+        await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
         await acceptCookies(page);
+        await page.waitForTimeout(2_000);
 
         // 1. Button "Ajouter au panier" present?
-        const addToCart = page.locator(ADD_TO_CART_BUTTON, { hasText: ADD_TO_CART_WORDING }).first();
-        const buttonVisible = await addToCart.isVisible({ timeout: 10_000 }).catch(() => false);
+        const addToCart = await findAddToCartButton(page);
+        const buttonVisible = addToCart ? await addToCart.isVisible({ timeout: 5_000 }).catch(() => false) : false;
         if (!buttonVisible) {
             log(`❌ Bouton "${ADD_TO_CART_WORDING}" absent, produit indisponible`);
             return false;
@@ -106,21 +128,25 @@ async function checkAvailability(context) {
 
         // 2. Add to cart
         log(`🛒 Bouton "${ADD_TO_CART_WORDING}" présent, ajout au panier`);
-        await addToCart.click();
+        await addToCart.click({ timeout: 10_000 });
 
-        // 3. Confirmation "Produit ajouté au panier" displayed?
+        // 3. Confirmation "Produit ajouté au panier" displayed (or cart counter incremented)?
         const confirmation = page
             .getByText(ADDED_TO_CART_WORDING, { exact: false })
             .or(page.locator(ADDED_TO_CART_CLASS, { hasText: ADDED_TO_CART_WORDING }))
             .first();
-        const confirmed = await confirmation.isVisible({ timeout: 15_000 }).catch(() => false);
+        let confirmed = await confirmation.isVisible({ timeout: 15_000 }).catch(() => false);
         if (!confirmed) {
-            log(`⚠️ Clic effectué mais "${ADDED_TO_CART_WORDING}" non affiché`);
+            await page.waitForTimeout(3_000);
+            confirmed = (await cartItemCount(context)) > 0;
+        }
+        if (!confirmed) {
+            log(`⚠️ Clic effectué mais "${ADDED_TO_CART_WORDING}" non affiché et panier vide`);
             return false;
         }
 
         // 4. Save the session (cart cookies) and alert on Telegram with the session file attached
-        log(`✅ ${ADDED_TO_CART_WORDING}`);
+        log(`✅ ${ADDED_TO_CART_WORDING} (${await cartItemCount(context)} article(s) dans le panier)`);
         await saveSession(context);
         await notify(
             [
