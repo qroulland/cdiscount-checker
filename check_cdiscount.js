@@ -199,11 +199,13 @@ async function watch() {
     const context = await browser.newContext({ locale: 'fr-FR', userAgent: USER_AGENT, viewport: { width: 1366, height: 900 } });
 
     let run = 0;
+    let found = false;
     try {
         while (ITERATIONS === 0 || run < ITERATIONS) {
             run += 1;
             try {
-                if (await checkAvailability(context)) break; // stop looping once alerted
+                found = await checkAvailability(context);
+                if (found) break; // stop looping once alerted
             } catch (error) {
                 log(`💥 Erreur: ${error.message}`);
             }
@@ -211,6 +213,8 @@ async function watch() {
         }
     } finally {
         await browser.close();
+        // Tell the GitHub Actions workflow whether to chain a new run
+        if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `found=${found}\n`);
     }
 }
 
