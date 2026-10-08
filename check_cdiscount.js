@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
-// Product page to watch. On GitHub Actions it comes from the repository variable PRODUCT_URL.
+// Product page to watch. On GitHub Actions it comes from the product_url input of the workflow (dispatched by the UI).
 const URL = process.env.PRODUCT_URL;
 const CART_URL = 'https://www.cdiscount.com/basket.html';
 
@@ -28,7 +28,7 @@ const RESTART_AFTER_ERRORS = Number(process.env.RESTART_AFTER_ERRORS || 30); // 
 const BAN_RESTARTS = Number(process.env.BAN_RESTARTS || 0); // how many ban restarts already happened in a row
 const BAN_RESTART_COOLDOWN_MS = 60 * 60_000; // after 3 restarts in a row, wait 1h before trying again
 const IN_CI = Boolean(process.env.GITHUB_OUTPUT);
-const LABEL = process.env.LABEL || 'default'; // short name of the watched product (UI + Telegram), "default" = PRODUCT_URL of the repo
+const LABEL = process.env.LABEL || 'local'; // short name of the watched product (UI + Telegram)
 
 // --- Live status for the UI (ui/): a GitHub check run on the commit, updated after every check ---
 // The logs of a running job cannot be downloaded, so the job publishes a small JSON status itself (job token, no extra secret).
@@ -155,16 +155,26 @@ async function reportStatus(patch, conclusion) {
         ...(conclusion && { conclusion, completed_at: status.updatedAt }),
         output: { title, summary, text: JSON.stringify(status) },
     };
+    const create = async () => {
+        const created = await githubApi('POST', `/repos/${GITHUB_REPOSITORY}/check-runs`, {
+            ...payload,
+            head_sha: process.env.GITHUB_SHA,
+            started_at: status.startedAt,
+        });
+        statusCheckRunId = created.id;
+    };
     try {
-        if (statusCheckRunId) {
+        if (!statusCheckRunId) {
+            await create();
+            return;
+        }
+        try {
             await githubApi('PATCH', `/repos/${GITHUB_REPOSITORY}/check-runs/${statusCheckRunId}`, payload);
-        } else {
-            const created = await githubApi('POST', `/repos/${GITHUB_REPOSITORY}/check-runs`, {
-                ...payload,
-                head_sha: process.env.GITHUB_SHA,
-                started_at: status.startedAt,
-            });
-            statusCheckRunId = created.id;
+        } catch (error) {
+            // Deleting a workflow run on GitHub also deletes the check runs attached to its commit: publish a fresh one
+            if (!/→ 404/.test(error.message)) throw error;
+            log('ℹ️ Check run de statut disparu, recréation');
+            await create();
         }
     } catch (error) {
         log(`⚠️ Statut non publié: ${error.message}`);
@@ -338,8 +348,7 @@ async function watch() {
 
     if (HEARTBEAT) {
         const span = ITERATIONS ? `${ITERATIONS} vérifications` : 'en continu';
-        const who = LABEL === 'default' ? '' : ` [${LABEL}]`;
-        await notify(`👀 Surveillance active${who} (${span}, toutes les ${Math.round(INTERVAL_MS / 60_000)} min)`).catch(() => {});
+        await notify(`👀 Surveillance active [${LABEL}] (${span}, toutes les ${Math.round(INTERVAL_MS / 60_000)} min)`).catch(() => {});
     }
     await reportStatus({ state: 'starting' });
 
