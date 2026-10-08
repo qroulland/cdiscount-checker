@@ -10,7 +10,7 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
-    // Fine-grained PAT on the checker repo: Actions read/write, Variables read/write (check runs are readable without permission on a public repo). Env: NUXT_GITHUB_TOKEN
+    // Fine-grained PAT on the checker repo: Actions read/write (check runs are readable without permission on a public repo). Env: NUXT_GITHUB_TOKEN
     githubToken: '',
     // owner/name of the checker repo. Env: NUXT_GITHUB_REPO
     githubRepo: 'qroulland/cdiscount-checker',

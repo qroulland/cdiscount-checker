@@ -4,9 +4,8 @@ Single-page Nuxt 4 + Nuxt UI dashboard for the checker jobs running on GitHub Ac
 
 - One card per watched product: state, last check, checks done, errors in a row, current run.
 - "Watch another product": dispatches a new job chain for a Cdiscount product URL.
-- "Stop" cancels the current run and the chain stops. For the default product it also sets the repository
-  variable `DEFAULT_PAUSED=true` so the hourly cron leaves it alone; "Watch again" clears it.
-- "Watch again" re-dispatches a product that is not running any more.
+- "Stop" cancels the current run; the chain stops and the product leaves the dashboard.
+- "Watch again" re-dispatches a product whose chain died (crash, hand-over failure).
 - Recent runs of the last 24 hours, auto-refreshed every 20 s.
 
 ## How it works
@@ -27,8 +26,7 @@ npm run dev            # http://localhost:3000
 ```
 
 `NUXT_GITHUB_TOKEN`: fine-grained personal access token on the checker repo with
-**Actions: read and write** (list, dispatch, cancel runs) and **Variables: read and write** (pause of the
-default product). The live status (check runs) is readable without
+**Actions: read and write** (list, dispatch, cancel runs). The live status (check runs) is readable without
 any permission because the repo is public; a private repo would need a classic token with the `repo` scope.
 
 Optional: `NUXT_UI_PASSWORD` protects the whole UI with HTTP basic auth (any user name), for a deployed instance.

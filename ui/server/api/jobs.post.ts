@@ -16,27 +16,17 @@ export default defineEventHandler(async (event) => {
   const productUrl = (body?.productUrl ?? '').trim()
   let label = sanitizeLabel(body?.label ?? '')
 
-  if (productUrl) {
-    let url: URL
-    try {
-      url = new URL(productUrl)
-    }
-    catch {
-      throw createError({ statusCode: 400, statusMessage: 'Bad Request', message: 'The product URL is not a valid URL.' })
-    }
-    if (!/(^|\.)cdiscount\.com$/i.test(url.hostname)) {
-      throw createError({ statusCode: 400, statusMessage: 'Bad Request', message: 'Only cdiscount.com product pages are supported.' })
-    }
-    if (!label) label = sanitizeLabel(labelFromUrl(url))
-    if (label.toLowerCase() === DEFAULT_LABEL) {
-      throw createError({ statusCode: 400, statusMessage: 'Bad Request', message: `"${DEFAULT_LABEL}" is reserved for the PRODUCT_URL product of the repo.` })
-    }
+  let url: URL
+  try {
+    url = new URL(productUrl)
   }
-  else {
-    // No URL: (re)start the default product, whose URL lives in the repo variables/secrets; let the cron watch over it again
-    label = ''
-    await setDefaultPaused(event, false)
+  catch {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', message: 'The product URL is not a valid URL.' })
   }
+  if (!/(^|\.)cdiscount\.com$/i.test(url.hostname)) {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', message: 'Only cdiscount.com product pages are supported.' })
+  }
+  if (!label) label = sanitizeLabel(labelFromUrl(url))
 
   try {
     await gh.request(`/repos/${gh.repo}/actions/workflows/${gh.workflowFile}/dispatches`, {
@@ -56,5 +46,5 @@ export default defineEventHandler(async (event) => {
     throw error
   }
 
-  return { ok: true, label: label || DEFAULT_LABEL }
+  return { ok: true, label }
 })

@@ -4,14 +4,14 @@ import type { GhCheckRun, GhRun } from './github'
 /** GitHub run statuses that mean "not finished". */
 export const ACTIVE_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested'])
 
-/** `run-name` of the workflow: "Cdiscount checker · <label>". Older runs had the bare workflow name. */
+/** `run-name` of the workflow: "Cdiscount checker · <label>". Runs from before the UI had the bare workflow name. */
 const TITLE_PREFIX = 'Cdiscount checker · '
 /** Name of the check run published by check_cdiscount.js: "Cdiscount status · <label>". */
 export const STATUS_CHECK_PREFIX = 'Cdiscount status · '
-export const DEFAULT_LABEL = 'default'
+const LEGACY_LABEL = 'default'
 
 export function labelFromTitle(title: string): string {
-  return title.startsWith(TITLE_PREFIX) ? title.slice(TITLE_PREFIX.length).trim() || DEFAULT_LABEL : DEFAULT_LABEL
+  return title.startsWith(TITLE_PREFIX) ? title.slice(TITLE_PREFIX.length).trim() || LEGACY_LABEL : LEGACY_LABEL
 }
 
 /** Map of run id → status JSON, out of the check runs of a commit. Non-checker check runs are ignored. */
@@ -59,8 +59,8 @@ export function toRunView(run: GhRun, checker: CheckerStatus | null): RunView {
   }
 }
 
-/** Group runs by product label; one card per product. */
-export function groupProducts(runs: RunView[], defaultPaused = false): ProductView[] {
+/** Group runs by product label; one card per product. A product stopped on purpose (last run cancelled) gets no card. */
+export function groupProducts(runs: RunView[]): ProductView[] {
   const byKey = new Map<string, RunView[]>()
   for (const run of runs) {
     const key = run.label.toLowerCase()
@@ -78,12 +78,10 @@ export function groupProducts(runs: RunView[], defaultPaused = false): ProductVi
     let state: ProductState = 'inactive'
     if (activeRun) state = activeRun.state
     else if (lastRun.state === 'found') state = 'found'
-    else if (key === DEFAULT_LABEL && defaultPaused) state = 'paused'
 
     return {
       key,
       label: lastRun.label,
-      isDefault: key === DEFAULT_LABEL,
       productUrl: withUrl?.productUrl ?? null,
       productName: named?.productName ?? null,
       state,
@@ -98,10 +96,8 @@ export function groupProducts(runs: RunView[], defaultPaused = false): ProductVi
     }
   })
 
-  // Running products first, then the default one, then alphabetically
-  return products.sort((a, b) =>
-    Number(Boolean(b.activeRun)) - Number(Boolean(a.activeRun))
-    || Number(b.isDefault) - Number(a.isDefault)
-    || a.label.localeCompare(b.label),
-  )
+  // Running products first, then alphabetically
+  return products
+    .filter(product => product.activeRun || product.lastRun.state !== 'cancelled')
+    .sort((a, b) => Number(Boolean(b.activeRun)) - Number(Boolean(a.activeRun)) || a.label.localeCompare(b.label))
 }

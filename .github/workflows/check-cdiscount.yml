@@ -1,23 +1,19 @@
 name: Cdiscount availability checker
-# The label identifies the watched product in the Actions list and in the UI (ui/). "default" = PRODUCT_URL of the repo.
-run-name: "Cdiscount checker · ${{ inputs.label || 'default' }}"
+# The label identifies the watched product in the Actions list and in the UI (ui/)
+run-name: "Cdiscount checker · ${{ inputs.label }}"
 
-# One long-running job checks the product every minute for ~5h30, then triggers its own successor.
-# GitHub's cron is only a safety net for the default product: it restarts the chain if a run died (and is best effort anyway).
-# Extra products are started from the UI (workflow_dispatch with product_url) and chain themselves the same way.
+# One long-running job checks a product every minute for ~5h30, then triggers its own successor.
+# Products are started from the UI (workflow_dispatch); a chain stops when the product is added to the cart
+# or when a run is cancelled (Stop button). A crashed job alerts on Telegram and still chains the next run.
 on:
-  schedule:
-    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       product_url:
-        description: "Product page to watch (empty = PRODUCT_URL variable/secret of the repo)"
-        required: false
-        default: ""
+        description: "Product page to watch"
+        required: true
       label:
-        description: "Short name of the product, shown in the UI and on Telegram (empty = default)"
-        required: false
-        default: ""
+        description: "Short name of the product, shown in the UI and on Telegram"
+        required: true
       ban_restarts:
         description: "Consecutive restarts caused by a ban (set by the chain, leave 0)"
         required: false
@@ -25,7 +21,7 @@ on:
 
 # Never run two checkers of the same product at the same time; different products run in parallel
 concurrency:
-  group: "cdiscount-checker · ${{ inputs.product_url || 'default' }}"
+  group: "cdiscount-checker · ${{ inputs.product_url }}"
   cancel-in-progress: false
 
 permissions:
@@ -35,9 +31,6 @@ permissions:
 
 jobs:
   check:
-    # The hourly cron only restarts the default product, and stays quiet while it is paused from the UI
-    # (repository variable DEFAULT_PAUSED=true, set by the Stop button; cleared by "Watch again")
-    if: github.event_name != 'schedule' || vars.DEFAULT_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 350 # GitHub hard limit is 360
     steps:
@@ -57,9 +50,8 @@ jobs:
         # Step timeout (not job): a timed-out step fails and the chain goes on, a timed-out job counts as cancelled and stops it
         timeout-minutes: 340
         env:
-          # Dispatch input, else repository variable PRODUCT_URL (Variables tab), else a secret of the same name
-          PRODUCT_URL: ${{ inputs.product_url || vars.PRODUCT_URL || secrets.PRODUCT_URL }}
-          LABEL: ${{ inputs.label || 'default' }}
+          PRODUCT_URL: ${{ inputs.product_url }}
+          LABEL: ${{ inputs.label }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ github.token }} # check run updates
@@ -81,19 +73,19 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LABEL: ${{ inputs.label || 'default' }}
+          LABEL: ${{ inputs.label }}
 
       # Backup copy of the session file (also sent on Telegram), downloadable from the workflow run page
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cdiscount-session-${{ inputs.label || 'default' }}
+          name: cdiscount-session-${{ inputs.label }}
           path: cdiscount-session-*.json
           if-no-files-found: ignore
           retention-days: 1
 
-      # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick)
-      # or the run was cancelled (the "Stop" button of the UI). Dispatch inputs are passed through env vars, not interpolated.
+      # Chain the next run, unless the product was added to the cart or the run was cancelled (the "Stop" button of the UI).
+      # Dispatch inputs are passed through env vars, not interpolated into the shell.
       # A ban restart increments the counter so the next run can slow down if the ban persists; anything else resets it.
       - name: Trigger next run
         if: ${{ !cancelled() && steps.check.outputs.found != 'true' }}

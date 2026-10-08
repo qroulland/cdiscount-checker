@@ -8,7 +8,7 @@ const toast = useToast()
 const meta = computed(() => STATE_META[props.product.state])
 const run = computed(() => props.product.activeRun ?? props.product.lastRun)
 const progress = computed(() => props.product.iterations ? Math.min(100, Math.round((props.product.checks / props.product.iterations) * 100)) : 0)
-const canRelaunch = computed(() => !props.product.activeRun && (props.product.isDefault || Boolean(props.product.productUrl)))
+const canRelaunch = computed(() => !props.product.activeRun && Boolean(props.product.productUrl))
 
 const stopOpen = ref(false)
 const stopping = ref(false)
@@ -18,12 +18,10 @@ async function stop() {
   if (!props.product.activeRun) return
   stopping.value = true
   try {
-    await $fetch(`/api/runs/${props.product.activeRun.id}/cancel`, { method: 'POST', body: { pauseDefault: props.product.isDefault } })
+    await $fetch(`/api/runs/${props.product.activeRun.id}/cancel`, { method: 'POST' })
     toast.add({
       title: `Stopping "${props.product.label}"`,
-      description: props.product.isDefault
-        ? 'The run is being cancelled and the hourly cron is paused until you watch again.'
-        : 'The run is being cancelled and will not chain a successor.',
+      description: 'The run is being cancelled and will not chain a successor. The product leaves the dashboard once cancelled.',
       color: 'neutral',
       icon: 'i-lucide-octagon-x',
     })
@@ -43,7 +41,7 @@ async function relaunch() {
   try {
     await $fetch('/api/jobs', {
       method: 'POST',
-      body: { productUrl: props.product.isDefault ? '' : props.product.productUrl, label: props.product.isDefault ? '' : props.product.label },
+      body: { productUrl: props.product.productUrl, label: props.product.label },
     })
     toast.add({ title: `Job dispatched for "${props.product.label}"`, color: 'success', icon: 'i-lucide-rocket' })
     emit('changed')
@@ -66,7 +64,6 @@ async function relaunch() {
             <h3 class="font-semibold text-highlighted truncate">
               {{ product.label }}
             </h3>
-            <UBadge v-if="product.isDefault" label="PRODUCT_URL" color="neutral" variant="subtle" size="sm" />
           </div>
           <p class="text-sm text-muted truncate">
             <template v-if="product.productName">{{ product.productName }}</template>
@@ -154,9 +151,7 @@ async function relaunch() {
             v-if="product.activeRun"
             v-model:open="stopOpen"
             :title="`Stop watching “${product.label}”?`"
-            :description="product.isDefault
-              ? 'Cancels the current run and pauses the hourly cron (DEFAULT_PAUSED repository variable). “Watch again” resumes it.'
-              : 'Cancels the current run. The chain stops: use “Watch again” or the form to restart it.'"
+            description="Cancels the current run. The chain stops; the product can be watched again from the form or the runs table."
           >
             <UButton icon="i-lucide-octagon-x" label="Stop" color="error" variant="soft" size="sm" />
             <template #footer>

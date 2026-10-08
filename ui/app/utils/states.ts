@@ -22,5 +22,4 @@ export const STATE_META: Record<ProductState, StateMeta> = {
   crashed: { label: 'Crashed', color: 'error', icon: 'i-lucide-bug', description: 'The job failed; see the run logs.' },
   cancelled: { label: 'Cancelled', color: 'neutral', icon: 'i-lucide-ban', description: 'Stopped manually or by the concurrency group.' },
   inactive: { label: 'Not running', color: 'neutral', icon: 'i-lucide-pause', description: 'No active job for this product.' },
-  paused: { label: 'Paused', color: 'neutral', icon: 'i-lucide-pause', description: 'Stopped from here; the hourly cron leaves it alone until “Watch again”.' },
 }

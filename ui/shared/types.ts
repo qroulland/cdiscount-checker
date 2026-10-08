@@ -20,7 +20,7 @@ export interface CheckerStatus {
 
 export type RunState = CheckerStatus['state'] | 'queued' | 'cancelled'
 
-export type ProductState = RunState | 'inactive' | 'paused'
+export type ProductState = RunState | 'inactive'
 
 export interface RunView {
   id: number
@@ -42,7 +42,6 @@ export interface RunView {
 export interface ProductView {
   key: string
   label: string
-  isDefault: boolean
   productUrl: string | null
   productName: string | null
   state: ProductState
@@ -59,8 +58,6 @@ export interface ProductView {
 export interface JobsResponse {
   generatedAt: string
   repoUrl: string
-  /** The hourly cron no longer restarts the default product (DEFAULT_PAUSED repository variable). */
-  defaultPaused: boolean
   products: ProductView[]
   runs: RunView[]
 }
