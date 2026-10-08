@@ -33,8 +33,9 @@ export default defineEventHandler(async (event) => {
     }
   }
   else {
-    // No URL: (re)start the default product, whose URL lives in the repo variables/secrets
+    // No URL: (re)start the default product, whose URL lives in the repo variables/secrets; let the cron watch over it again
     label = ''
+    await setDefaultPaused(event, false)
   }
 
   try {

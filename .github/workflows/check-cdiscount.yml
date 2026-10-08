@@ -35,6 +35,9 @@ permissions:
 
 jobs:
   check:
+    # The hourly cron only restarts the default product, and stays quiet while it is paused from the UI
+    # (repository variable DEFAULT_PAUSED=true, set by the Stop button; cleared by "Watch again")
+    if: github.event_name != 'schedule' || vars.DEFAULT_PAUSED != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 350 # GitHub hard limit is 360
     steps:

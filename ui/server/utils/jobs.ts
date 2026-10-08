@@ -60,7 +60,7 @@ export function toRunView(run: GhRun, checker: CheckerStatus | null): RunView {
 }
 
 /** Group runs by product label; one card per product. */
-export function groupProducts(runs: RunView[]): ProductView[] {
+export function groupProducts(runs: RunView[], defaultPaused = false): ProductView[] {
   const byKey = new Map<string, RunView[]>()
   for (const run of runs) {
     const key = run.label.toLowerCase()
@@ -78,6 +78,7 @@ export function groupProducts(runs: RunView[]): ProductView[] {
     let state: ProductState = 'inactive'
     if (activeRun) state = activeRun.state
     else if (lastRun.state === 'found') state = 'found'
+    else if (key === DEFAULT_LABEL && defaultPaused) state = 'paused'
 
     return {
       key,

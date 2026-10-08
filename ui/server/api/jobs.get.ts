@@ -7,12 +7,13 @@ const CHECK_RUN_PAGES = 3 // 100 check runs per page: a chain on one commit prod
 export default defineEventHandler(async (event): Promise<JobsResponse> => {
   const gh = github(event)
 
-  const { workflow_runs: allRuns } = await gh.request<{ workflow_runs: GhRun[] }>(
-    `/repos/${gh.repo}/actions/workflows/${gh.workflowFile}/runs`,
-    { query: { per_page: 50 } },
-  )
+  const [{ workflow_runs: allRuns }, defaultPaused] = await Promise.all([
+    gh.request<{ workflow_runs: GhRun[] }>(`/repos/${gh.repo}/actions/workflows/${gh.workflowFile}/runs`, { query: { per_page: 50 } }),
+    isDefaultPaused(event),
+  ])
   const since = Date.now() - HISTORY_WINDOW_MS
-  const runs = allRuns.filter(run => ACTIVE_STATUSES.has(run.status) || new Date(run.updated_at).getTime() > since)
+  // Skipped runs are the hourly cron ticking while the default product is paused: noise
+  const runs = allRuns.filter(run => run.conclusion !== 'skipped' && (ACTIVE_STATUSES.has(run.status) || new Date(run.updated_at).getTime() > since))
 
   // The checker publishes its status as a check run on the commit it runs from (usually a single sha for all runs)
   const statuses = new Map<number, CheckerStatus>()
@@ -35,7 +36,8 @@ export default defineEventHandler(async (event): Promise<JobsResponse> => {
   return {
     generatedAt: new Date().toISOString(),
     repoUrl: gh.repoUrl,
-    products: groupProducts(views),
+    defaultPaused,
+    products: groupProducts(views, defaultPaused),
     runs: views,
   }
 })

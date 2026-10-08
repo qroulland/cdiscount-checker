@@ -18,11 +18,11 @@ async function stop() {
   if (!props.product.activeRun) return
   stopping.value = true
   try {
-    await $fetch(`/api/runs/${props.product.activeRun.id}/cancel`, { method: 'POST' })
+    await $fetch(`/api/runs/${props.product.activeRun.id}/cancel`, { method: 'POST', body: { pauseDefault: props.product.isDefault } })
     toast.add({
       title: `Stopping "${props.product.label}"`,
       description: props.product.isDefault
-        ? 'The run is being cancelled. The hourly cron restarts the default product within an hour.'
+        ? 'The run is being cancelled and the hourly cron is paused until you watch again.'
         : 'The run is being cancelled and will not chain a successor.',
       color: 'neutral',
       icon: 'i-lucide-octagon-x',
@@ -155,7 +155,7 @@ async function relaunch() {
             v-model:open="stopOpen"
             :title="`Stop watching “${product.label}”?`"
             :description="product.isDefault
-              ? 'Cancels the current run. The hourly cron restarts the default product within an hour; disable the workflow on GitHub to stop it for good.'
+              ? 'Cancels the current run and pauses the hourly cron (DEFAULT_PAUSED repository variable). “Watch again” resumes it.'
               : 'Cancels the current run. The chain stops: use “Watch again” or the form to restart it.'"
           >
             <UButton icon="i-lucide-octagon-x" label="Stop" color="error" variant="soft" size="sm" />
