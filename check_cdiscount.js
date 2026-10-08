@@ -17,6 +17,9 @@ const ADDED_TO_CART_CLASS = '.sc-dvXCMe.hJwwjS'; // hashed styled-components cla
 const MODE = process.argv[2];
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 60_000); // 1 min
 const ITERATIONS = Number(process.env.ITERATIONS || 0); // 0 = loop forever
+// Stop looping after this long (0 = no limit). On GitHub Actions a check cycle takes ~80s, so the job must end on its own
+// before its timeout: a timed-out job counts as cancelled and would not chain the next run.
+const MAX_RUNTIME_MS = Number(process.env.MAX_RUNTIME_MIN || 0) * 60_000;
 const HEADLESS = MODE !== 'open' && process.env.HEADLESS !== 'false';
 const HEARTBEAT = process.env.HEARTBEAT === 'true'; // Telegram message when a run starts
 const ERROR_ALERT_THRESHOLD = Number(process.env.ERROR_ALERT_THRESHOLD || 3); // consecutive failed checks before warning
@@ -25,6 +28,15 @@ const RESTART_AFTER_ERRORS = Number(process.env.RESTART_AFTER_ERRORS || 30); // 
 const BAN_RESTARTS = Number(process.env.BAN_RESTARTS || 0); // how many ban restarts already happened in a row
 const BAN_RESTART_COOLDOWN_MS = 60 * 60_000; // after 3 restarts in a row, wait 1h before trying again
 const IN_CI = Boolean(process.env.GITHUB_OUTPUT);
+const LABEL = process.env.LABEL || 'default'; // short name of the watched product (UI + Telegram), "default" = PRODUCT_URL of the repo
+
+// --- Live status for the UI (ui/): a GitHub check run on the commit, updated after every check ---
+// The logs of a running job cannot be downloaded, so the job publishes a small JSON status itself (job token, no extra secret).
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY;
+const GITHUB_API = process.env.GITHUB_API_URL || 'https://api.github.com';
+const REPORT_STATUS = IN_CI && Boolean(GITHUB_TOKEN && GITHUB_REPOSITORY && process.env.GITHUB_SHA);
+const STATUS_CHECK_NAME = `Cdiscount status · ${LABEL}`;
 
 // Session files are written next to the script as cdiscount-session-<timestamp>.json
 const SESSION_PREFIX = 'cdiscount-session-';
@@ -71,6 +83,92 @@ async function sendDocument(filePath, caption) {
     form.append('document', new Blob([fs.readFileSync(filePath)], { type: 'application/json' }), path.basename(filePath));
     const res = await fetch(url, { method: 'POST', body: form });
     if (!res.ok) log(`⚠️ Telegram sendDocument ${res.status}: ${await res.text()}`);
+}
+
+const STATE_TITLES = {
+    starting: 'Démarrage',
+    unavailable: 'Indisponible, surveillance en cours',
+    error: 'Erreurs de vérification',
+    found: 'Ajouté au panier',
+    restarting: 'Redémarrage sur une nouvelle instance',
+    ended: 'Terminé, relais vers le prochain job',
+    crashed: 'Le script a planté',
+};
+
+// Everything the UI shows about this job. Serialized as JSON in the check run output.
+const status = {
+    v: 1,
+    runId: process.env.GITHUB_RUN_ID || null,
+    label: LABEL,
+    productUrl: URL || null,
+    productName: null,
+    state: 'starting',
+    checks: 0,
+    lastCheckAt: null,
+    startedAt: new Date().toISOString(),
+    updatedAt: null,
+    intervalMs: INTERVAL_MS,
+    iterations: ITERATIONS,
+    maxRuntimeMs: MAX_RUNTIME_MS,
+    consecutiveErrors: 0,
+    lastError: null,
+    found: false,
+    banRestarts: BAN_RESTARTS,
+};
+let statusCheckRunId = null;
+
+async function githubApi(method, route, body) {
+    const res = await fetch(`${GITHUB_API}${route}`, {
+        method,
+        headers: {
+            Authorization: `Bearer ${GITHUB_TOKEN}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`GitHub ${method} ${route} → ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return res.json();
+}
+
+// patch: fields merged into the status. conclusion ('success' | 'neutral' | 'failure'): closes the check run.
+// Never throws: a status that cannot be published must not stop the checker.
+async function reportStatus(patch, conclusion) {
+    Object.assign(status, patch, { updatedAt: new Date().toISOString() });
+    if (!REPORT_STATUS) return;
+    const title = STATE_TITLES[status.state] || status.state;
+    const summary = [
+        `**${title}**`,
+        status.productName && `Produit : ${status.productName}`,
+        `Vérifications : ${status.checks}${status.iterations ? ` / ${status.iterations}` : ''}`,
+        status.lastCheckAt && `Dernière vérification : ${status.lastCheckAt}`,
+        status.lastError && `Dernière erreur [${status.lastError.kind}] : ${status.lastError.message}`,
+    ]
+        .filter(Boolean)
+        .join('\n\n');
+    const payload = {
+        name: STATUS_CHECK_NAME,
+        external_id: String(status.runId),
+        details_url: `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${GITHUB_REPOSITORY}/actions/runs/${status.runId}`,
+        status: conclusion ? 'completed' : 'in_progress',
+        ...(conclusion && { conclusion, completed_at: status.updatedAt }),
+        output: { title, summary, text: JSON.stringify(status) },
+    };
+    try {
+        if (statusCheckRunId) {
+            await githubApi('PATCH', `/repos/${GITHUB_REPOSITORY}/check-runs/${statusCheckRunId}`, payload);
+        } else {
+            const created = await githubApi('POST', `/repos/${GITHUB_REPOSITORY}/check-runs`, {
+                ...payload,
+                head_sha: process.env.GITHUB_SHA,
+                started_at: status.startedAt,
+            });
+            statusCheckRunId = created.id;
+        }
+    } catch (error) {
+        log(`⚠️ Statut non publié: ${error.message}`);
+    }
 }
 
 async function saveSession(context) {
@@ -166,6 +264,7 @@ async function checkAvailability(context) {
             // A sold-out product page shows an "unavailable" block. Nothing at all means we got a block page or a redesign.
             const soldOut = await page.locator('[data-e2e="unavailable-message"]').first().isVisible({ timeout: 3_000 }).catch(() => false);
             if (!soldOut) throw new CheckError('unexpected', `ni bouton ni message indisponible, titre: "${await page.title()}"`);
+            if (!status.productName) status.productName = (await productName(page).catch(() => '')) || null;
             log(`❌ Bouton "${ADD_TO_CART_WORDING}" absent, produit indisponible`);
             return false;
         }
@@ -191,6 +290,7 @@ async function checkAvailability(context) {
 
         // 4. Save the session (cart cookies) and alert on Telegram with the session file attached
         const name = await productName(page);
+        status.productName = name || status.productName;
         log(`✅ "${name}" ajouté au panier (${await cartItemCount(context)} article(s) dans le panier)`);
         const sessionFile = await saveSession(context);
         const sessionName = path.basename(sessionFile);
@@ -238,30 +338,40 @@ async function watch() {
 
     if (HEARTBEAT) {
         const span = ITERATIONS ? `${ITERATIONS} vérifications` : 'en continu';
-        await notify(`👀 Surveillance active (${span}, toutes les ${Math.round(INTERVAL_MS / 60_000)} min)`).catch(() => {});
+        const who = LABEL === 'default' ? '' : ` [${LABEL}]`;
+        await notify(`👀 Surveillance active${who} (${span}, toutes les ${Math.round(INTERVAL_MS / 60_000)} min)`).catch(() => {});
     }
+    await reportStatus({ state: 'starting' });
 
     let run = 0;
     let found = false;
     let banRestart = false;
     let consecutiveErrors = 0;
     let errorAlertSent = false;
+    let outcome = 'ended'; // ended (iterations or time exhausted, chained) | found | restarting | crashed
+    const startedAt = Date.now();
+    const keepGoing = () => (ITERATIONS === 0 || run < ITERATIONS) && (MAX_RUNTIME_MS === 0 || Date.now() - startedAt + INTERVAL_MS < MAX_RUNTIME_MS);
     try {
-        while (ITERATIONS === 0 || run < ITERATIONS) {
+        while (keepGoing()) {
             run += 1;
             try {
                 found = await checkAvailability(context);
+                await reportStatus({ state: found ? 'found' : 'unavailable', checks: run, lastCheckAt: new Date().toISOString(), consecutiveErrors: 0, lastError: null, found });
                 if (errorAlertSent) {
                     errorAlertSent = false;
                     await notify(`✅ Le checker fonctionne à nouveau (après ${consecutiveErrors} échecs)`).catch(() => {});
                 }
                 consecutiveErrors = 0;
-                if (found) break; // stop looping once alerted
+                if (found) {
+                    outcome = 'found';
+                    break; // stop looping once alerted
+                }
             } catch (error) {
                 consecutiveErrors += 1;
                 const kind = classifyError(error);
                 const reason = error.message.split('\n')[0];
                 log(`💥 Erreur [${kind}] (${consecutiveErrors} d'affilée): ${reason}`);
+                await reportStatus({ state: 'error', checks: run, lastCheckAt: new Date().toISOString(), consecutiveErrors, lastError: { kind, message: reason } });
 
                 // Restart on a fresh instance: right away on a ban, or after a long streak of any error
                 const restart = IN_CI && (kind === 'ban' ? consecutiveErrors >= ERROR_ALERT_THRESHOLD : consecutiveErrors >= RESTART_AFTER_ERRORS);
@@ -278,13 +388,21 @@ async function watch() {
                 }
                 if (restart) {
                     banRestart = true;
+                    outcome = 'restarting';
+                    await reportStatus({ state: 'restarting' });
                     if (BAN_RESTARTS >= 3) await sleep(BAN_RESTART_COOLDOWN_MS);
                     break;
                 }
             }
-            if (ITERATIONS === 0 || run < ITERATIONS) await sleep(INTERVAL_MS);
+            if (keepGoing()) await sleep(INTERVAL_MS);
         }
+        if (outcome === 'ended') log(`🏁 Fin de la session après ${run} vérifications (${Math.round((Date.now() - startedAt) / 60_000)} min)`);
+    } catch (error) {
+        outcome = 'crashed';
+        await reportStatus({ state: 'crashed', lastError: { kind: 'crash', message: error.message.split('\n')[0] } }, 'failure');
+        throw error;
     } finally {
+        if (outcome !== 'crashed') await reportStatus({ state: outcome }, outcome === 'found' ? 'success' : 'neutral');
         await browser.close();
         // Tell the GitHub Actions workflow whether to chain a new run, and whether this was a ban restart
         if (IN_CI) fs.appendFileSync(process.env.GITHUB_OUTPUT, `found=${found}\nban_restart=${banRestart}\n`);

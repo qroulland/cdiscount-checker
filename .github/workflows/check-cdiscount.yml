@@ -1,24 +1,36 @@
 name: Cdiscount availability checker
+# The label identifies the watched product in the Actions list and in the UI (ui/). "default" = PRODUCT_URL of the repo.
+run-name: "Cdiscount checker · ${{ inputs.label || 'default' }}"
 
 # One long-running job checks the product every minute for ~5h30, then triggers its own successor.
-# GitHub's cron is only a safety net: it restarts the chain if a run died (and is best effort anyway).
+# GitHub's cron is only a safety net for the default product: it restarts the chain if a run died (and is best effort anyway).
+# Extra products are started from the UI (workflow_dispatch with product_url) and chain themselves the same way.
 on:
   schedule:
     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
+      product_url:
+        description: "Product page to watch (empty = PRODUCT_URL variable/secret of the repo)"
+        required: false
+        default: ""
+      label:
+        description: "Short name of the product, shown in the UI and on Telegram (empty = default)"
+        required: false
+        default: ""
       ban_restarts:
         description: "Consecutive restarts caused by a ban (set by the chain, leave 0)"
         required: false
         default: "0"
 
-# Never run two checkers at the same time
+# Never run two checkers of the same product at the same time; different products run in parallel
 concurrency:
-  group: cdiscount-checker
+  group: "cdiscount-checker · ${{ inputs.product_url || 'default' }}"
   cancel-in-progress: false
 
 permissions:
   actions: write # needed to trigger the next run
+  checks: write # live status published as a check run, read by the UI
   contents: read
 
 jobs:
@@ -39,14 +51,19 @@ jobs:
 
       - id: check
         run: node check_cdiscount.js
+        # Step timeout (not job): a timed-out step fails and the chain goes on, a timed-out job counts as cancelled and stops it
+        timeout-minutes: 340
         env:
-          # Repository variable PRODUCT_URL (Variables tab), or a secret of the same name as fallback
-          PRODUCT_URL: ${{ vars.PRODUCT_URL || secrets.PRODUCT_URL }}
+          # Dispatch input, else repository variable PRODUCT_URL (Variables tab), else a secret of the same name
+          PRODUCT_URL: ${{ inputs.product_url || vars.PRODUCT_URL || secrets.PRODUCT_URL }}
+          LABEL: ${{ inputs.label || 'default' }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ github.token }} # check run updates
           INTERVAL_MS: "60000" # 1 min
-          ITERATIONS: "280" # ~70s per cycle (check + wait) = ~5h30, under the 350 min job timeout
-          HEARTBEAT: "true" # Telegram message at each run start (~4 per day); set to "false" to silence
+          ITERATIONS: "280" # upper bound on checks per run; in practice MAX_RUNTIME_MIN ends the run first (~80s per cycle)
+          MAX_RUNTIME_MIN: "330" # ~5h30: the run must end by itself, before the step/job timeouts, to chain its successor
+          HEARTBEAT: "true" # Telegram message at each run start (~4 per day per product); set to "false" to silence
           ERROR_ALERT_THRESHOLD: "3" # warn on Telegram after 3 consecutive failed checks (~3 min)
           RESTART_AFTER_ERRORS: "30" # any error 30 times in a row (~30 min): restart on a fresh VM
           BAN_RESTARTS: ${{ inputs.ban_restarts || '0' }}
@@ -57,33 +74,38 @@ jobs:
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            --data-urlencode text="💥 Le job GitHub du checker a planté. Voir ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
+            --data-urlencode text="💥 Le job GitHub du checker [${LABEL}] a planté. Voir ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LABEL: ${{ inputs.label || 'default' }}
 
       # Backup copy of the session file (also sent on Telegram), downloadable from the workflow run page
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cdiscount-session
+          name: cdiscount-session-${{ inputs.label || 'default' }}
           path: cdiscount-session-*.json
           if-no-files-found: ignore
           retention-days: 1
 
-      # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick).
+      # Chain the next run, unless the product was added to the cart (monitoring then stops until the next cron tick)
+      # or the run was cancelled (the "Stop" button of the UI). Dispatch inputs are passed through env vars, not interpolated.
       # A ban restart increments the counter so the next run can slow down if the ban persists; anything else resets it.
       - name: Trigger next run
-        if: always() && steps.check.outputs.found != 'true'
+        if: ${{ !cancelled() && steps.check.outputs.found != 'true' }}
         run: |
           NEXT=0
           if [ "${{ steps.check.outputs.ban_restart }}" = "true" ]; then NEXT=$(( ${{ inputs.ban_restarts || '0' }} + 1 )); fi
           echo "ban_restarts for next run: $NEXT"
           for attempt in 1 2 3 4 5; do
-            gh workflow run check-cdiscount.yml --ref main -R "${{ github.repository }}" -f ban_restarts="$NEXT" && exit 0
+            gh workflow run check-cdiscount.yml --ref main -R "${{ github.repository }}" \
+              -f ban_restarts="$NEXT" -f product_url="$PRODUCT_URL_INPUT" -f label="$LABEL_INPUT" && exit 0
             echo "dispatch failed (attempt $attempt), retrying in 30s"
             sleep 30
           done
           exit 1
         env:
           GH_TOKEN: ${{ github.token }}
+          PRODUCT_URL_INPUT: ${{ inputs.product_url }}
+          LABEL_INPUT: ${{ inputs.label }}
