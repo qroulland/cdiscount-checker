@@ -6,6 +6,8 @@ Single-page Nuxt 4 + Nuxt UI dashboard for the checker jobs running on GitHub Ac
 - "Watch another product": dispatches a new job chain for a Cdiscount product URL.
 - "Stop" cancels the current run; the chain stops and the product leaves the dashboard.
 - "Watch again" re-dispatches a product whose chain died (crash, hand-over failure).
+- "Delete" removes a product that is not running any more (found, crashed…): its finished runs are deleted
+  from GitHub, logs and session backup included. The session file sent on Telegram is unaffected.
 - Recent runs of the last 24 hours, auto-refreshed every 20 s.
 
 ## How it works

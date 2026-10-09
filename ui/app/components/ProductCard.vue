@@ -13,6 +13,9 @@ const canRelaunch = computed(() => !props.product.activeRun && Boolean(props.pro
 const stopOpen = ref(false)
 const stopping = ref(false)
 const relaunching = ref(false)
+const deleteOpen = ref(false)
+const deleting = ref(false)
+const finishedRuns = computed(() => props.product.runs.filter(r => !r.active))
 
 async function stop() {
   if (!props.product.activeRun) return
@@ -33,6 +36,31 @@ async function stop() {
   }
   finally {
     stopping.value = false
+  }
+}
+
+// Removes the product from the dashboard for good: its finished runs are deleted from GitHub (logs and artifacts included)
+async function remove() {
+  deleting.value = true
+  try {
+    const result = await $fetch<{ deleted: number[], skipped: number[] }>('/api/runs/delete', {
+      method: 'POST',
+      body: { ids: finishedRuns.value.map(r => r.id) },
+    })
+    toast.add({
+      title: `"${props.product.label}" removed`,
+      description: `${result.deleted.length} run${result.deleted.length === 1 ? '' : 's'} deleted from GitHub.`,
+      color: 'neutral',
+      icon: 'i-lucide-trash-2',
+    })
+    deleteOpen.value = false
+    emit('changed')
+  }
+  catch (error) {
+    toast.add({ title: 'Delete failed', description: errorMessage(error), color: 'error', icon: 'i-lucide-triangle-alert' })
+  }
+  finally {
+    deleting.value = false
   }
 }
 
@@ -139,6 +167,20 @@ async function relaunch() {
         />
         <span v-else />
         <div class="flex items-center gap-2">
+          <UModal
+            v-if="!product.activeRun && finishedRuns.length"
+            v-model:open="deleteOpen"
+            :title="`Remove “${product.label}”?`"
+            :description="`Deletes its ${finishedRuns.length} finished run${finishedRuns.length === 1 ? '' : 's'} from GitHub, with their logs and session backup. ${product.state === 'found' ? 'The session file was also sent on Telegram. ' : ''}This cannot be undone.`"
+          >
+            <UButton icon="i-lucide-trash-2" label="Delete" color="neutral" variant="ghost" size="sm" />
+            <template #footer>
+              <div class="flex justify-end gap-2 w-full">
+                <UButton label="Keep it" color="neutral" variant="ghost" @click="deleteOpen = false" />
+                <UButton label="Delete the runs" color="error" :loading="deleting" @click="remove" />
+              </div>
+            </template>
+          </UModal>
           <UButton
             v-if="canRelaunch"
             icon="i-lucide-play"
